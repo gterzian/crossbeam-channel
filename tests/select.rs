@@ -15,6 +15,76 @@ fn ms(ms: u64) -> Duration {
 }
 
 #[test]
+fn recv_without_binding_msg() {
+    let (s1, r1) = channel::unbounded::<usize>();
+    s1.send(1);
+
+    select! {
+        recv(r1) => assert_eq!(r1.try_recv(), Some(1)),
+    }
+}
+
+#[test]
+fn send_without_binding_msg() {
+    let (s1, r1) = channel::bounded::<usize>(2);
+    let (s2, r2) = channel::bounded::<bool>(1);
+    let (s3, r3) = channel::bounded::<bool>(1);
+    crossbeam::scope(|scope| {
+        scope.spawn(|| {
+            for i in 0..5 {
+                select! {
+                    // Not binding i here would be the solution,
+                    // so that it is only send once inside the body,
+                    // after checking the msg on r2.
+                    send(s1, i) => {
+                        match r2.recv().unwrap() {
+                            true => {
+                                s1.send(i);
+                            },
+
+                            false => break,
+                        }
+                    }
+                }
+            }
+        });
+
+        scope.spawn(|| {
+            // Ask for the first piece of work.
+            s2.send(true);
+            let mut expected = 0;
+            loop {
+                select! {
+                    recv(r1, msg) => {
+                        // Do some work with msg.
+                        if !(msg.unwrap() == expected) {
+                            // don't want more work
+                            s2.send(false);
+                            // unblock the other
+                            r1.try_recv();
+                            // test fails
+                            s3.send(false);
+                            break;
+                        }
+                        expected = expected + 1;
+                        if expected == 5 {
+                            s3.send(true);
+                            break;
+                        }
+                        // Ask for the next piece of work.
+                        s2.send(true);
+                    }
+                }
+            }
+        });
+
+        scope.defer(|| {
+            assert_eq!(r3.recv().unwrap(), true);
+        });
+    });
+}
+
+#[test]
 fn smoke1() {
     let (s1, r1) = channel::unbounded::<usize>();
     let (s2, r2) = channel::unbounded::<usize>();
